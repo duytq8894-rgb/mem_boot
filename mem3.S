@@ -1,15 +1,24 @@
 /* =============================================================================
  *  mem3.S  --  Boot-ROM memory test cho loi Rocket (RISC-V RV32) -- viet tay
  * -----------------------------------------------------------------------------
- *  Toan bo code chay TRONG ROM tai 0x10000000. _start bat dau bang lenh cau
- *  hinh CSR custom (csrwi 0x7c1,0), roi chay tiep ngay vao phan test.
+ *  Toan bo code chay TRONG ROM tai 0x10000000. _start: cau hinh CSR custom,
+ *  lam cac buoc set up kieu crt0, roi chay tiep vao phan test (khong nhay di).
  *
  *  BAN DO BO NHO:
  *    ROM 0x10000000 (256 KiB) : toan bo code (.text)
- *    RAM 0x80000000 (256 MiB) : section .tohost (HTIF)
+ *    RAM 0x80000000 (256 MiB) : .tohost ; .bss ; vung stack ; marker
  *    VUNG TEST : 0x80090000 .. 0x800A0000  (64 KiB, trong RAM)
- *       -- la phan dau cua dai 0x80090000..0x90000000; chi test 64 KiB dau
- *          (quet toan bo ~255 MB se rat cham khi mo phong RTL).
+ *    Marker cafebabe/deadbeef : 0x80008000  (xem ghi chu ben duoi)
+ *
+ *  CAC BUOC SET UP trong _start (trich tu crt0 mau, tru buoc nhay vao main):
+ *    - csrwi 0x7c1,0      : cau hinh CSR custom (cache/feature) -- tu bootrom
+ *    - magic 0xCAFEBABE   : ghi marker "bat dau" ra 0x80008000
+ *    - sp = __stack_top   : lap stack pointer (symbol do link3.ld dinh nghia)
+ *    - s0 = 0             : xoa frame pointer
+ *    - mstatus.FS = 0b11  : bat FPU
+ *    - xoa .bss           : ghi 0 tu __bss_start toi __bss_end
+ *    (Buoc nap gp BI LOAI: mem3.S dung gp/x3 lam TESTNUM.)
+ *    Khi PASS: ghi magic 0xDEADBEEF ra 0x80008000.
  *
  *  CAC PHASE (gp/x3 = TESTNUM) -- mot vung test duy nhat:
  *    2     : test do rong truy cap (sb/sh/sw, lb/lbu/lh/lhu/lw)
@@ -27,25 +36,49 @@
  *        -T link3.ld -o mem3.elf mem3.S
  *
  *  GHI CHU:
- *    - Da gop thanh MOT vung test duy nhat (bo phan biet cached/uncached).
  *    - csrwi 0x7c1,0 : ghi 0 vao CSR custom 0x7c1 (cache/feature). Sua cho dung
  *      core cua ban.
- *    - Code khong dung stack.
+ *    - Dia chi marker 0x80008000 chi la mac dinh -- doi cho dung testbench.
+ *    - Code khong dung stack (sp duoc lap nhung phan test khong dung toi).
  * ============================================================================= */
 
     .option norelax                 /* gp dung lam TESTNUM -> cam linker relax gp */
 
 /* =============================================================================
  *  DIEM VAO -- reset vector @ ROM 0x10000000.
- *  Bat dau bang lenh cau hinh CSR custom, roi chay tiep vao test.
+ *  Cau hinh CSR custom -> cac buoc set up -> chay tiep vao test.
  * =========================================================================== */
     .section .text.init, "ax", @progbits
     .globl _start
     .align 2
 _start:
     csrwi 0x7c1, 0                  /* cau hinh CSR custom 0x7c1 (cache/feature)*/
-    csrr  t0, mhartid               /* chi hart 0 chay test                    */
+
+    csrr  t0, mhartid               /* chi hart 0 lam set up + chay test        */
     bnez  t0, park_hart
+
+    /* ===== CAC BUOC SET UP (trich tu crt0, tru buoc nhay vao main) ===== */
+    /* (1) magic marker "bat dau" = 0xCAFEBABE */
+    li    t0, 0xCAFEBABE
+    li    t1, 0x80008000            /* >>> SUA: dia chi marker neu can <<<     */
+    sw    t0, 0(t1)
+    /* (2) lap stack pointer = __stack_top (symbol trong link3.ld) */
+    la    sp, __stack_top
+    /* (3) xoa frame pointer s0 */
+    li    s0, 0
+    /* (4) bat FPU : mstatus.FS = 0b11 (0x6000) */
+    li    t0, 0x6000
+    csrs  mstatus, t0
+    /* (5) xoa vung .bss ve 0 (tu __bss_start toi __bss_end) */
+    la    t0, __bss_start
+    la    t1, __bss_end
+1:  bgeu  t0, t1, 2f                /* .bss rong -> bo qua                     */
+    sw    zero, 0(t0)
+    addi  t0, t0, 4
+    j     1b
+2:
+    /* ===== HET CAC BUOC SET UP ===== */
+
     csrw  mie, zero                 /* tat interrupt                           */
     la    t0, trap_handler
     csrw  mtvec, t0                 /* trap vector (direct mode)               */
@@ -193,6 +226,9 @@ main:
  * =========================================================================== */
     .align 2
 pass:
+    li    t0, 0xDEADBEEF            /* magic marker "ket thuc" -> 0x80008000  */
+    li    t1, 0x80008000            /* >>> SUA: dia chi marker neu can <<<     */
+    sw    t0, 0(t1)
     li    t0, 1                     /* tohost = 1 -> PASS                     */
     la    t1, tohost
     sw    t0, 0(t1)
