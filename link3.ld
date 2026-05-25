@@ -1,19 +1,27 @@
 /* =============================================================================
- *  link2.ld  --  Linker script cho mem.S (Rocket RV32 boot-ROM memory test)
+ *  link3.ld  --  Linker script cho mem3.S (Rocket RV32 boot-ROM memory test)
  * -----------------------------------------------------------------------------
+ *  Toan bo code chay trong ROM. _start (cau hinh CSR + cac buoc set up) nam dau
+ *  ROM va chay tiep ngay vao phan test -- KHONG nhay di dau.
+ *
  *  BAN DO BO NHO:
- *    ROM : 0x10000000 , 256 KiB   -- chua code .text ; ORIGIN = dia chi reset core
- *    RAM : 0x80000000 , 256 MiB   -- chua section .tohost (o 0x80000000) va .bss
+ *    ROM 0x10000000 (256 KiB) : toan bo code (.text). ORIGIN(ROM) = dia chi
+ *                               reset cua core.
+ *    RAM 0x80000000 (256 MiB) : .tohost ; .bss ; vung stack.
  *
- *  Vung test do mem.S truy cap luc CHAY (khong phai section cua linker):
- *    CACHED   = 0x80010000 .. 0x80020000   (trong RAM, ngay sau .tohost)
- *    UNCACHED = do .equ UNCACHED_BASE trong mem.S quy dinh (cua so non-cacheable)
+ *  SYMBOL do linker script nay dinh nghia (mem3.S dung trong cac buoc set up):
+ *    __bss_start , __bss_end : dau/cuoi vung .bss (de _start xoa .bss).
+ *    __stack_top             : dinh stack (de _start lap sp).
  *
- *  RANG BUOC BAT BUOC:
- *    - ORIGIN(ROM) phai bang dia chi reset (boot address) cua loi Rocket.
- *    - Section .tohost phai nam trong RAM ghi duoc; HTIF tim symbol `tohost`.
- *    - Vung test CACHED/UNCACHED KHONG duoc trung .text, .tohost, .bss.
- *      (.tohost rat nho, nam o 0x80000000; CACHED bat dau o 0x80010000 -> an toan.)
+ *  Vung test do mem3.S truy cap luc CHAY (khong phai section cua linker):
+ *    VUNG TEST = 0x80090000 .. 0x800A0000  (64 KiB, trong RAM)
+ *    Marker cafebabe/deadbeef = 0x80008000
+ *
+ *  RANG BUOC:
+ *    - ORIGIN(ROM) phai bang dia chi reset cua core.
+ *    - .tohost / .bss / stack phai nam trong RAM ghi duoc.
+ *    - Vung test va marker khong duoc trung .tohost/.bss/stack.
+ *      (.tohost+.bss+stack ~5 KiB dau RAM; vung test bat dau 0x80090000.)
  * ============================================================================= */
 
 OUTPUT_ARCH(riscv)
@@ -21,10 +29,10 @@ ENTRY(_start)
 
 MEMORY
 {
-    /* boot ROM: chua code .text -- ORIGIN = dia chi reset cua core */
+    /* boot ROM: toan bo code -- ORIGIN = dia chi reset cua core */
     ROM (rx)  : ORIGIN = 0x10000000, LENGTH = 256K
 
-    /* RAM ghi duoc: chua section .tohost / .bss                    */
+    /* RAM ghi duoc: chua .tohost / .bss / stack */
     RAM (rw)  : ORIGIN = 0x80000000, LENGTH = 256M
 }
 
@@ -33,17 +41,25 @@ SECTIONS
     . = ORIGIN(ROM);
 
     .text : {
-        KEEP(*(.text.init))         /* reset vector phai nam dau */
+        KEEP(*(.text.init))         /* _start phai nam dau */
         *(.text .text.*)
         *(.rodata .rodata.*)
     } > ROM
 
     .tohost ALIGN(64) : {
-        *(.tohost)                  /* nam o dau RAM -> tohost = 0x80000000 */
+        *(.tohost)                  /* symbol tohost / fromhost */
     } > RAM
 
     .bss (NOLOAD) : {
+        __bss_start = .;            /* _start xoa .bss tu day ... */
         *(.bss .bss.* COMMON)
+        __bss_end = .;              /* ... toi day */
+    } > RAM
+
+    .stack (NOLOAD) : {
+        . = ALIGN(16);
+        . = . + 0x1000;             /* vung stack 4 KiB */
+        __stack_top = .;            /* dinh stack -> _start lap sp = day */
     } > RAM
 
     /DISCARD/ : {
