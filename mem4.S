@@ -1,0 +1,347 @@
+/* =============================================================================
+ *  mem3.S  --  Boot-ROM memory test cho loi Rocket (RISC-V RV32) -- ban viet tay
+ * -----------------------------------------------------------------------------
+ *  Phong cach: KHONG dung .equ, KHONG dung .macro, KHONG dung .insn.
+ *  Moi dia chi / gia tri deu viet thang bang so. Code chay tuyen tinh tu tren
+ *  xuong duoi, de doc tung dong mot.
+ *
+ *  BAN DO BO NHO:
+ *    ROM : 0x10000000 (256 KiB)  -- chua code  (= ORIGIN(ROM) trong link3.ld)
+ *    RAM : 0x80000000 (256 MiB)  -- tohost nam o 0x80000000
+ *    Vung test CACHED   : 0x80010000 .. 0x80020000  (64 KiB, trong RAM)
+ *    Vung test UNCACHED : 0x90000000 .. 0x90001000  (4 KiB)  <-- SUA cho SoC ban
+ *
+ *  CAC PHASE (so phase luu trong gp/x3 = TESTNUM):
+ *    2      : test do rong truy cap (sb/sh/sw, lb/lbu/lh/lhu/lw) -- CACHED
+ *    3..6   : test 4 mau du lieu (0x00000000/FFFFFFFF/55555555/AAAAAAAA) -- CACHED
+ *    7      : test dia-chi-la-du-lieu -- CACHED
+ *    8      : test do rong truy cap -- UNCACHED
+ *    9..12  : test 4 mau du lieu -- UNCACHED
+ *    13     : test dia-chi-la-du-lieu -- UNCACHED
+ *    14     : fence
+ *    15     : fence.i
+ *
+ *  KET QUA (chuan riscv-tests, qua symbol tohost):
+ *    tohost = 1                  -> PASS
+ *    tohost = (TESTNUM << 1) | 1 -> FAIL tai phase TESTNUM
+ *    Neu trap bat thuong         -> TESTNUM cong them 0x1000 (xem mcause o t0)
+ *
+ *  BUILD:
+ *    riscv32-unknown-elf-gcc -march=rv32imc_zicsr_zifencei -mabi=ilp32 \
+ *        -mcmodel=medany -nostdlib -nostartfiles -ffreestanding -Wl,--no-relax \
+ *        -T link3.ld -o mem3.elf mem3.S
+ *    riscv32-unknown-elf-objcopy -O binary mem3.elf mem3.bin
+ *
+ *  GHI CHU:
+ *    - Da bo phan CBO (cbo.clean/flush/inval/zero): chung can .insn hoac _zicbom.
+ *      Rocket RV32 thuong khong co CMO nen phan do truoc gio cung tat.
+ *    - fence.i dung mnemonic truc tiep -> can _zifencei trong -march.
+ *    - Code khong dung stack.
+ * ============================================================================= */
+
+    .option norelax                 /* gp dung lam TESTNUM -> cam linker relax gp */
+
+/* =============================================================================
+ *  DIEM VAO -- reset vector. _start nam dau .text.init -> dat tai ORIGIN(ROM).
+ * =========================================================================== */
+    .section .text.init, "ax", @progbits
+    .globl _start
+    .align 2
+_start:
+    csrr  t0, mhartid               /* chi hart 0 chay test                   */
+    bnez  t0, park_hart
+    csrw  mie, zero                 /* tat interrupt                          */
+    la    t0, trap_handler
+    csrw  mtvec, t0                 /* trap vector (direct mode)              */
+    li    gp, 0                     /* TESTNUM = 0                            */
+    j     main
+
+park_hart:                          /* cac hart khac dung yen                 */
+    wfi
+    j     park_hart
+
+/* =============================================================================
+ *  THAN CHUONG TRINH TEST
+ * =========================================================================== */
+    .section .text, "ax", @progbits
+    .align 2
+main:
+
+/* ---- Phase 2 : test do rong truy cap -- vung CACHED ----------------------- */
+    li    gp, 2
+    li    a0, 0x80010100            /* dia chi scratch trong vung cached      */
+    /* byte khong dau */
+    li    t1, 0xA5
+    sb    t1, 0(a0)
+    lbu   t2, 0(a0)
+    bne   t2, t1, fail
+    /* byte co dau: 0x80 -> mo rong dau = 0xFFFFFF80 */
+    li    t1, 0x80
+    sb    t1, 0(a0)
+    lb    t2, 0(a0)
+    li    t3, 0xFFFFFF80
+    bne   t2, t3, fail
+    /* halfword khong dau */
+    li    t1, 0x1234
+    sh    t1, 0(a0)
+    lhu   t2, 0(a0)
+    bne   t2, t1, fail
+    /* halfword co dau: 0x8000 -> mo rong dau = 0xFFFF8000 */
+    li    t1, 0x8000
+    sh    t1, 0(a0)
+    lh    t2, 0(a0)
+    li    t3, 0xFFFF8000
+    bne   t2, t3, fail
+    /* word 32-bit */
+    li    t1, 0x0123CDEF
+    sw    t1, 0(a0)
+    lw    t2, 0(a0)
+    bne   t2, t1, fail
+    li    t1, 0xC0DE1234
+    sw    t1, 0(a0)
+    lw    t2, 0(a0)
+    bne   t2, t1, fail
+
+/* ---- Phase 3 : mau 0x00000000 -- vung CACHED ------------------------------ */
+    li    gp, 3
+    li    t0, 0x80010000            /* con tro = dau vung                     */
+    li    t1, 0x80020000            /* dia chi cuoi (loai tru)                */
+    li    a2, 0x00000000            /* mau du lieu                            */
+1:  sw    a2, 0(t0)                 /* ghi mau ra toan vung                   */
+    addi  t0, t0, 4
+    bltu  t0, t1, 1b
+    fence
+    li    t0, 0x80010000
+2:  lw    t3, 0(t0)                 /* doc lai va so sanh                     */
+    bne   t3, a2, fail
+    addi  t0, t0, 4
+    bltu  t0, t1, 2b
+
+/* ---- Phase 4 : mau 0xFFFFFFFF -- vung CACHED ------------------------------ */
+    li    gp, 4
+    li    t0, 0x80010000
+    li    t1, 0x80020000
+    li    a2, 0xFFFFFFFF
+1:  sw    a2, 0(t0)
+    addi  t0, t0, 4
+    bltu  t0, t1, 1b
+    fence
+    li    t0, 0x80010000
+2:  lw    t3, 0(t0)
+    bne   t3, a2, fail
+    addi  t0, t0, 4
+    bltu  t0, t1, 2b
+
+/* ---- Phase 5 : mau 0x55555555 -- vung CACHED ------------------------------ */
+    li    gp, 5
+    li    t0, 0x80010000
+    li    t1, 0x80020000
+    li    a2, 0x55555555
+1:  sw    a2, 0(t0)
+    addi  t0, t0, 4
+    bltu  t0, t1, 1b
+    fence
+    li    t0, 0x80010000
+2:  lw    t3, 0(t0)
+    bne   t3, a2, fail
+    addi  t0, t0, 4
+    bltu  t0, t1, 2b
+
+/* ---- Phase 6 : mau 0xAAAAAAAA -- vung CACHED ------------------------------ */
+    li    gp, 6
+    li    t0, 0x80010000
+    li    t1, 0x80020000
+    li    a2, 0xAAAAAAAA
+1:  sw    a2, 0(t0)
+    addi  t0, t0, 4
+    bltu  t0, t1, 1b
+    fence
+    li    t0, 0x80010000
+2:  lw    t3, 0(t0)
+    bne   t3, a2, fail
+    addi  t0, t0, 4
+    bltu  t0, t1, 2b
+
+/* ---- Phase 7 : test dia-chi-la-du-lieu -- vung CACHED --------------------- */
+    li    gp, 7
+    li    t0, 0x80010000
+    li    t1, 0x80020000
+1:  sw    t0, 0(t0)                 /* moi o luu chinh dia chi cua no         */
+    addi  t0, t0, 4
+    bltu  t0, t1, 1b
+    fence
+    li    t0, 0x80010000
+2:  lw    t3, 0(t0)
+    bne   t3, t0, fail
+    addi  t0, t0, 4
+    bltu  t0, t1, 2b
+
+/* ---- Phase 8 : test do rong truy cap -- vung UNCACHED --------------------- */
+    li    gp, 8
+    li    a0, 0x90000000            /* dia chi scratch trong vung uncached    */
+    /* byte khong dau */
+    li    t1, 0xA5
+    sb    t1, 0(a0)
+    lbu   t2, 0(a0)
+    bne   t2, t1, fail
+    /* byte co dau */
+    li    t1, 0x80
+    sb    t1, 0(a0)
+    lb    t2, 0(a0)
+    li    t3, 0xFFFFFF80
+    bne   t2, t3, fail
+    /* halfword khong dau */
+    li    t1, 0x1234
+    sh    t1, 0(a0)
+    lhu   t2, 0(a0)
+    bne   t2, t1, fail
+    /* halfword co dau */
+    li    t1, 0x8000
+    sh    t1, 0(a0)
+    lh    t2, 0(a0)
+    li    t3, 0xFFFF8000
+    bne   t2, t3, fail
+    /* word 32-bit */
+    li    t1, 0x0123CDEF
+    sw    t1, 0(a0)
+    lw    t2, 0(a0)
+    bne   t2, t1, fail
+    li    t1, 0xC0DE1234
+    sw    t1, 0(a0)
+    lw    t2, 0(a0)
+    bne   t2, t1, fail
+
+/* ---- Phase 9 : mau 0x00000000 -- vung UNCACHED ---------------------------- */
+    li    gp, 9
+    li    t0, 0x90000000
+    li    t1, 0x90001000
+    li    a2, 0x00000000
+1:  sw    a2, 0(t0)
+    addi  t0, t0, 4
+    bltu  t0, t1, 1b
+    fence
+    li    t0, 0x90000000
+2:  lw    t3, 0(t0)
+    bne   t3, a2, fail
+    addi  t0, t0, 4
+    bltu  t0, t1, 2b
+
+/* ---- Phase 10 : mau 0xFFFFFFFF -- vung UNCACHED --------------------------- */
+    li    gp, 10
+    li    t0, 0x90000000
+    li    t1, 0x90001000
+    li    a2, 0xFFFFFFFF
+1:  sw    a2, 0(t0)
+    addi  t0, t0, 4
+    bltu  t0, t1, 1b
+    fence
+    li    t0, 0x90000000
+2:  lw    t3, 0(t0)
+    bne   t3, a2, fail
+    addi  t0, t0, 4
+    bltu  t0, t1, 2b
+
+/* ---- Phase 11 : mau 0x55555555 -- vung UNCACHED --------------------------- */
+    li    gp, 11
+    li    t0, 0x90000000
+    li    t1, 0x90001000
+    li    a2, 0x55555555
+1:  sw    a2, 0(t0)
+    addi  t0, t0, 4
+    bltu  t0, t1, 1b
+    fence
+    li    t0, 0x90000000
+2:  lw    t3, 0(t0)
+    bne   t3, a2, fail
+    addi  t0, t0, 4
+    bltu  t0, t1, 2b
+
+/* ---- Phase 12 : mau 0xAAAAAAAA -- vung UNCACHED --------------------------- */
+    li    gp, 12
+    li    t0, 0x90000000
+    li    t1, 0x90001000
+    li    a2, 0xAAAAAAAA
+1:  sw    a2, 0(t0)
+    addi  t0, t0, 4
+    bltu  t0, t1, 1b
+    fence
+    li    t0, 0x90000000
+2:  lw    t3, 0(t0)
+    bne   t3, a2, fail
+    addi  t0, t0, 4
+    bltu  t0, t1, 2b
+
+/* ---- Phase 13 : test dia-chi-la-du-lieu -- vung UNCACHED ------------------ */
+    li    gp, 13
+    li    t0, 0x90000000
+    li    t1, 0x90001000
+1:  sw    t0, 0(t0)
+    addi  t0, t0, 4
+    bltu  t0, t1, 1b
+    fence
+    li    t0, 0x90000000
+2:  lw    t3, 0(t0)
+    bne   t3, t0, fail
+    addi  t0, t0, 4
+    bltu  t0, t1, 2b
+
+/* ---- Phase 14 : fence -- kiem tra ordering store/load --------------------- */
+    li    gp, 14
+    li    a0, 0x80010000
+    li    t1, 0x0FE00014
+    sw    t1, 0(a0)
+    fence                           /* store truoc fence hoan tat truoc load  */
+    lw    t2, 0(a0)
+    bne   t2, t1, fail
+
+/* ---- Phase 15 : fence.i -- dong bo instruction stream --------------------- */
+    li    gp, 15
+    fence.i
+
+/* ---- Tat ca phase deu PASS ------------------------------------------------ */
+    j     pass
+
+/* =============================================================================
+ *  BAO KET QUA
+ * =========================================================================== */
+    .align 2
+pass:
+    li    t0, 1                     /* tohost = 1 -> PASS                     */
+    la    t1, tohost
+    sw    t0, 0(t1)
+    fence
+1:  j     1b                        /* dung tai cho                           */
+
+    .align 2
+fail:
+    slli  gp, gp, 1                 /* tohost = (TESTNUM << 1) | 1            */
+    ori   gp, gp, 1
+    la    t1, tohost
+    sw    gp, 0(t1)
+    fence
+1:  j     1b
+
+/* -----------------------------------------------------------------------------
+ *  TRAP HANDLER -- moi trap bat thuong deu coi la FAIL.
+ *  mcause giu trong t0 de debug ; TESTNUM (gp) cong them 0x1000.
+ * --------------------------------------------------------------------------- */
+    .align 2
+trap_handler:
+    csrr  t0, mcause                /* t0 = ly do trap                        */
+    li    t1, 0x1000
+    add   gp, gp, t1                /* danh dau loi do trap tai phase gp      */
+    j     fail
+
+/* =============================================================================
+ *  HOST INTERFACE -- tohost/fromhost nam o dau RAM (0x80000000), xem link3.ld.
+ *  Giu 8 byte (chuan HTIF 64-bit) ; RV32 ghi 32-bit thap bang sw.
+ * =========================================================================== */
+    .section .tohost, "aw", @progbits
+    .align 6
+    .globl tohost
+tohost:
+    .quad 0
+    .align 6
+    .globl fromhost
+fromhost:
+    .quad 0
