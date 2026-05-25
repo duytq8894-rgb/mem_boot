@@ -5,10 +5,10 @@
  *  lam cac buoc set up kieu crt0, roi chay tiep vao phan test (khong nhay di).
  *
  *  BAN DO BO NHO:
- *    ROM 0x10000000 (256 KiB) : toan bo code (.text)
- *    RAM 0x80000000 (256 MiB) : .tohost ; .bss ; vung stack ; marker
- *    VUNG TEST : 0x80090000 .. 0x800A0000  (64 KiB, trong RAM)
- *    Marker cafebabe/deadbeef : 0x80008000  (xem ghi chu ben duoi)
+ *    ROM 0x10000000 (256 KiB) : .text + .tohost + .bss + stack (TAT CA o ROM)
+ *    RAM 0x80000000           : truy cap luc CHAY (khong do linker quan ly):
+ *        VUNG TEST = 0x80090000 .. 0x800A0000  (64 KiB)
+ *        Marker cafebabe/deadbeef = 0x80008000
  *
  *  CAC BUOC SET UP trong _start (trich tu crt0 mau, tru buoc nhay vao main):
  *    - csrwi 0x7c1,0      : cau hinh CSR custom (cache/feature) -- tu bootrom
@@ -256,7 +256,7 @@ trap_handler:
     j     fail
 
 /* =============================================================================
- *  HOST INTERFACE -- tohost/fromhost nam o RAM (xem link3.ld).
+ *  HOST INTERFACE -- tohost/fromhost nam trong ROM (xem link3.ld).
  *  Giu 8 byte (chuan HTIF 64-bit) ; RV32 ghi 32-bit thap bang sw.
  * =========================================================================== */
     .section .tohost, "aw", @progbits
